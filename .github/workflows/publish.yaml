@@ -14,12 +14,15 @@ on:
           - stunner
           - stunner-premium
           - stunner-prometheus
+      ref:
+        description: 'Branch / tag / SHA to build from'
+        required: false
+        default: 'main'
 
 env:
   TAG: ${{ inputs.tag }}
   TYPE: ${{ inputs.type }}
-  # Change this if you want a different "namespace" in GHCR.
-  # This becomes: oci://ghcr.io/<OWNER>/<OCI_REPO>
+  REF: ${{ inputs.ref }}
   OWNER: ${{ github.repository_owner }}
   OCI_REPO: charts
 
@@ -31,22 +34,22 @@ jobs:
   push_chart:
     runs-on: ubuntu-latest
     steps:
-      - name: Log the received tag
+      - name: Log inputs
         run: |
           echo "Version is $TAG"
           echo "Triggered by $TYPE"
+          echo "Ref is $REF"
 
-      - name: stunner-helm checkout
+      - name: Checkout repository at requested ref
         uses: actions/checkout@v4
         with:
-          path: stunner-helm
-          ref: main
-          repository: l7mp/stunner-helm
+          ref: ${{ env.REF }}
+          fetch-depth: 0
 
       - name: Edit helm chart for stunner (stunner-gateway-operator previously)
         if: ${{ env.TYPE == 'stunner' }}
         run: |
-          cd stunner-helm/helm
+          cd helm
           if ${{ env.TAG == 'dev' }}; then
             sed -ri 's/^(\s*)(name\s*:\s*.*\s*$)/\1name: stunner-gateway-operator-dev/' stunner-gateway-operator/Chart.yaml
             sed -i '/stunnerGatewayOperator:/,/pullPolicy:/ s/\(pullPolicy:\s*\).*/\1Always/' stunner-gateway-operator/values.yaml
@@ -63,7 +66,7 @@ jobs:
       - name: Edit helm chart for stunner-premium
         if: ${{ env.TYPE == 'stunner-premium' }}
         run: |
-          cd stunner-helm/helm
+          cd helm
           if ${{ env.TAG == 'dev' }}; then
             sed -ri 's/^(\s*)(name\s*:\s*.*\s*$)/\1name: stunner-gateway-operator-dev/' stunner-gateway-operator/Chart.yaml
             sed -i '/stunnerGatewayOperator:/,/pullPolicy:/ s/\(pullPolicy:\s*\).*/\1Always/' stunner-gateway-operator/values.yaml
@@ -90,7 +93,6 @@ jobs:
 
       - name: Run chart-testing (lint)
         run: |
-          cd stunner-helm
           ct lint --all --chart-dirs helm --excluded-charts stunner-kurento-one2one-call
 
       - name: Create kind cluster
@@ -98,7 +100,6 @@ jobs:
 
       - name: Run chart-testing (install)
         run: |
-          cd stunner-helm
           if ${{ env.TYPE == 'stunner-prometheus' }}; then
             ct install --chart-dirs helm --charts helm/stunner-prometheus
           else
@@ -107,7 +108,7 @@ jobs:
 
       - name: Build helm chart for ${{ env.TYPE }}
         run: |
-          cd stunner-helm/helm
+          cd helm
           if ${{ env.TYPE == 'stunner-prometheus' }}; then
             helm package stunner-prometheus
           else
@@ -121,10 +122,7 @@ jobs:
 
       - name: Push Helm chart to GHCR (OCI)
         run: |
-          cd stunner-helm/helm
-
-          # Pick the packaged tgz we just built (there should be exactly one)
+          cd helm
           CHART_TGZ="$(ls -1 *.tgz | head -n 1)"
           echo "Pushing $CHART_TGZ to oci://ghcr.io/${{ env.OWNER }}/${{ env.OCI_REPO }}"
-
           helm push "$CHART_TGZ" "oci://ghcr.io/${{ env.OWNER }}/${{ env.OCI_REPO }}"
