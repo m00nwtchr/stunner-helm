@@ -1,4 +1,5 @@
-name: Build and Release Helm charts
+name: Build and Release Helm charts (OCI -> GHCR)
+
 on:
   workflow_dispatch:
     inputs:
@@ -10,13 +11,21 @@ on:
         required: true
         type: choice
         options:
-          - stunner # stunner-gateway-operator before 1.1.0
-          - stunner-premium #stunner-gateway-operator premium edition, shortening the name by leaving out the gateway-operator part
+          - stunner
+          - stunner-premium
           - stunner-prometheus
 
 env:
   TAG: ${{ inputs.tag }}
   TYPE: ${{ inputs.type }}
+  # Change this if you want a different "namespace" in GHCR.
+  # This becomes: oci://ghcr.io/<OWNER>/<OCI_REPO>
+  OWNER: ${{ github.repository_owner }}
+  OCI_REPO: charts
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
   push_chart:
@@ -51,7 +60,6 @@ jobs:
           sed -i '/authService:/,/tag:/ s/\(tag:\s*\).*/\1'"${{ env.TAG }}"'/' stunner-gateway-operator/values.yaml
           sed -ri 's/^(\s*)(appVersion\s*:\s*.*\s*$)/\1appVersion: ${{ env.TAG }}/' stunner-gateway-operator/Chart.yaml
 
-      # STUNner premium edition
       - name: Edit helm chart for stunner-premium
         if: ${{ env.TYPE == 'stunner-premium' }}
         run: |
@@ -105,41 +113,18 @@ jobs:
           else
             helm package stunner-gateway-operator
           fi
+          ls -lah *.tgz
 
-      - name: Set git config
+      - name: Log in to GHCR
         run: |
-          git config --global user.email "l7mp.info@gmail.com"
-          git config --global user.name "BotL7mp"
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Checkout build branch
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.WEB_PAT_TOKEN }}
-          path: build
-          repository: l7mp/stunner-helm
-          ref: build
-
-      - name: Update build branch
+      - name: Push Helm chart to GHCR (OCI)
         run: |
-          if ${{ env.TAG == 'dev' }}; then
-            rm -rf build/${{ env.TYPE }}-dev*.tgz
-          fi
-          cp stunner-helm/helm/*.tgz build/
-          helm repo index build --url https://l7mp.io/stunner
-          cd build
-          git add .
-          if ${{ env.TAG == 'dev' }}; then
-            git commit -m "Update dev helm chart from l7mp/${{ env.TYPE }}" -m "(triggered by the 'Helm release' github action.)"
-          else
-            git commit -m "Release helm chart from l7mp/${{ env.TYPE }}" -m "(triggered by the 'Helm release' github action.)"
-          fi
-          git push origin build
+          cd stunner-helm/helm
 
-      - name: Update stunner-helm repo
-        if: ${{ env.TAG != 'dev' && env.TYPE != 'stunner-premium' }}
-        run: |
-          cd stunner-helm
-          rm helm/*.tgz
-          git add .
-          git commit -m "Update helm charts from l7mp/${{ env.TYPE }}" -m "(triggered by the 'Helm release' github action.)"
-          git push origin main
+          # Pick the packaged tgz we just built (there should be exactly one)
+          CHART_TGZ="$(ls -1 *.tgz | head -n 1)"
+          echo "Pushing $CHART_TGZ to oci://ghcr.io/${{ env.OWNER }}/${{ env.OCI_REPO }}"
+
+          helm push "$CHART_TGZ" "oci://ghcr.io/${{ env.OWNER }}/${{ env.OCI_REPO }}"
